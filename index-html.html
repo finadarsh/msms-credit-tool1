@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MSME Credit Risk Assessment Tool</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f1f5f9; font-family: 'Segoe UI', system-ui, sans-serif; }
+    input[type=number]::-webkit-inner-spin-button { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useCallback, useRef } = React;
+    const { BarChart, Bar, LineChart, Line, RadarChart, Radar, PolarGrid,
+            PolarAngleAxis, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+            ResponsiveContainer, PolarRadiusAxis } = Recharts;
+
+    // ─── Constants ────────────────────────────────────────────────────────────
+    const RATING_META = [
+      { label:"Excellent",      bg:"#166534", text:"#fff" },
+      { label:"Very Strong",    bg:"#16a34a", text:"#fff" },
+      { label:"Strong",         bg:"#65a30d", text:"#fff" },
+      { label:"Satisfactory",   bg:"#ca8a04", text:"#fff" },
+      { label:"Moderate Risk",  bg:"#ea580c", text:"#fff" },
+      { label:"High Risk",      bg:"#dc2626", text:"#fff" },
+      { label:"Very High Risk", bg:"#9f1239", text:"#fff" },
+      { label:"Default Grade",  bg:"#450a0a", text:"#fff" },
+    ];
+    const CORPORATE_GRADES = ["AAA","AA+","AA","A+","A","BBB","BB","B","C","D"];
+    const UNITS = { lakhs: 1e5, cr: 1e7, million: 1e6 };
+    function toRaw(val, unit) { return (parseFloat(val)||0) * UNITS[unit]; }
+    function fromRaw(raw, unit) { return raw / UNITS[unit]; }
+    function fmtAuto(raw) {
+      if (!raw || isNaN(raw)) return "—";
+      if (Math.abs(raw) >= 1e7) return `₹${(raw/1e7).toFixed(2)} Cr`;
+      if (Math.abs(raw) >= 1e5) return `₹${(raw/1e5).toFixed(2)} L`;
+      return `₹${Number(raw).toLocaleString("en-IN")}`;
+    }
+    const rm = r => RATING_META[Math.min(Math.max(Math.round(r),1),8)-1];
+
+    // ─── Scoring ──────────────────────────────────────────────────────────────
+    const scoreCR   = v => v>=2?1:v>=1.5?2:v>=1.2?3:v>=1?4:v>=0.8?5:v>=0.6?6:v>=0.4?7:8;
+    const scoreQR   = v => v>=1.5?1:v>=1.2?2:v>=1?3:v>=0.8?4:v>=0.6?5:v>=0.4?6:v>=0.2?7:8;
+    const scoreDER  = v => v<=0.5?1:v<=1?2:v<=1.5?3:v<=2?4:v<=2.5?5:v<=3?6:v<=4?7:8;
+    const scoreICR  = v => v>=5?1:v>=3.5?2:v>=2.5?3:v>=1.75?4:v>=1.25?5:v>=1?6:v>=0.75?7:8;
+    const scoreDSCR = v => v>=2?1:v>=1.75?2:v>=1.5?3:v>=1.25?4:v>=1.1?5:v>=1?6:v>=0.9?7:8;
+    const scoreNPM  = v => v>=0.15?1:v>=0.10?2:v>=0.07?3:v>=0.05?4:v>=0.03?5:v>=0.01?6:v>=0?7:8;
+    const scoreROE  = v => v>=0.20?1:v>=0.15?2:v>=0.10?3:v>=0.08?4:v>=0.05?5:v>=0.03?6:v>=0?7:8;
+    const scoreEBIT = v => v>=0.20?1:v>=0.15?2:v>=0.10?3:v>=0.08?4:v>=0.05?5:v>=0.03?6:v>=0?7:8;
+    const scoreOCF  = v => v>=0.20?1:v>=0.15?2:v>=0.10?3:v>=0.05?4:v>=0.02?5:v>=0?6:v>=-0.05?7:8;
+    const avg = (...a) => { const v=a.filter(x=>isFinite(x)&&!isNaN(x)); return v.length?v.reduce((s,x)=>s+x,0)/v.length:5; };
+    const safeDiv = (a,b) => (b&&b!==0)?a/b:null;
+
+    const Q_OPTS = [
+      ["< 2 years","3–5 years","5–10 years","10–20 years","20+ years"],
+      ["School","Graduate","Post-Graduate","Professional (CA/MBA/Engg)"],
+      ["None","Being Planned","Partial","Documented & Implemented"],
+      ["< 1 year","1–3 years","3–7 years","7–15 years","15+ years"],
+      ["Poor/Irregular","Average","Good","Excellent"],
+      ["Weak","Basic","Good","Strong/Board-level"],
+      ["Owner-managed","Some professionals","Mostly professional","Fully professional"],
+    ];
+    const IND_OPTS = [
+      ["Declining","Slow growth","Moderate growth","High growth","Hyper-growth"],
+      ["<5%","5–10%","10–20%","20–40%",">40%"],
+      ["Intense/Price war","High competition","Moderate","Low","Niche/Monopoly"],
+      ["Very low","Low","Moderate","High","Very high"],
+      ["Single customer","Top 3 >70%","Top 5 >60%","Diversified","Highly diversified"],
+      ["Single supplier","Concentrated","Moderate","Diversified","Highly diversified"],
+      ["High disruption risk","Moderate risk","Some risk","Low risk","Minimal risk"],
+    ];
+    const LEG_OPTS = [
+      ["Non-compliant","Poor","Average","Good","Excellent"],
+      ["Non-compliant","Poor","Average","Good","Excellent"],
+      ["None/Irregular","Partial","Mostly compliant","Fully compliant"],
+      ["Major pending","Multiple cases","Some cases","Minor/resolved","None"],
+      ["Defaults present","Settled defaults","Minor issues","Clean","Excellent"],
+      ["Yes","Under investigation","Historical","No"],
+    ];
+    const BANK_OPTS = [
+      ["< 1 Lakh","1–5 Lakh","5–20 Lakh","20–50 Lakh","> 50 Lakh"],
+      ["> 6/year","4–6/year","2–3/year","1/year","None"],
+      ["Irregular","Delayed","Mostly on time","Always on time"],
+      ["> 5 Cr","2–5 Cr","1–2 Cr","< 1 Cr","None"],
+      ["> 90%","75–90%","50–75%","25–50%","< 25%"],
+      ["< 2x","2–5x","5–10x","10–20x","> 20x"],
+    ];
+    const qScore = (v,opts) => { const i=opts.indexOf(v); return i<0?5:Math.round(8-(i/(opts.length-1))*7); };
+    const qScoreInv = (v,opts) => { const i=opts.indexOf(v); return i<0?5:Math.round(1+(i/(opts.length-1))*7); };
+
+    function collateralCoverageScore(loanAmt, totalColl) {
+      if (!loanAmt || loanAmt <= 0) return 4;
+      const cov = totalColl / loanAmt;
+      if (cov >= 1.5) return 1; if (cov >= 1.2) return 2; if (cov >= 1.0) return 3;
+      if (cov >= 0.8) return 4; if (cov >= 0.6) return 5; if (cov >= 0.4) return 6;
+      if (cov >= 0.2) return 7; return 8;
+    }
+    function collateralInterestDiscount(cov) {
+      if (cov >= 1.5) return -2.5; if (cov >= 1.2) return -1.75; if (cov >= 1.0) return -1.0;
+      if (cov >= 0.8) return -0.5; if (cov >= 0.6) return 0; if (cov >= 0.4) return 0.5;
+      return 1.5;
+    }
+
+    const emptyYear = () => ({
+      revenue:"",cogs:"",grossProfit:"",opex:"",ebitda:"",depreciation:"",
+      interest:"",pbt:"",pat:"",cash:"",bankBalance:"",inventory:"",
+      receivables:"",otherCA:"",fixedAssets:"",investments:"",
+      creditors:"",shortTermDebt:"",longTermDebt:"",otherLiabilities:"",
+      capital:"",reserves:"",operatingCF:"",investingCF:"",financingCF:"",principalRepayment:"",
+    });
+
+    const LOAN_TYPES=["Working Capital Loan","Cash Credit (CC)","Term Loan","Overdraft","Machinery Loan","Business Expansion Loan","LAP (Loan Against Property)","MSME Composite Loan"];
+    const CONSTITUTIONS=["Proprietorship","Partnership","LLP","Private Limited","Public Limited"];
+    const INDUSTRIES=["Manufacturing","Trading","Services","Export","Retail","Construction","Logistics","Others"];
+    const STEPS=["Loan","Borrower","Financials","Mgmt","Industry","Legal","Collateral","Banking","Results"];
+
+    const INIT = {
+      step:0,loanType:"",loanAmount:"",loanTenure:"",loanPurpose:"",
+      companyName:"",constitution:"",industry_sector:"",yearsInBusiness:"",
+      gst:"",pan:"",cin:"",employees:"",bankRelation:"",outstandingDebt:"",
+      years:["FY23","FY24","FY25"],unit:"lakhs",ratingMode:"numeric",
+      financials:[emptyYear(),emptyYear(),emptyYear()],
+      mgmt:{experience:"",education:"",succession:"",industryExpertise:"",bankTrack:"",governance:"",professionalMgmt:""},
+      industry:{growth:"",marketShare:"",competition:"",entryBarriers:"",customerConc:"",supplierConc:"",techDisruption:""},
+      legal:{gstCompliance:"",itCompliance:"",filings:"",litigation:"",cibil:"",creditBureau:"",wilfulDefault:""},
+      collateral:{propertyValue:"",machineryValue:"",fdValue:"",inventoryValue:"",receivablesValue:"",collateralType:""},
+      banking:{avgBalance:"",chequeReturns:"",emiServicing:"",existingExposure:"",utilization:"",accountTurnover:""},
+    };
+
+    // ─── Styles ───────────────────────────────────────────────────────────────
+    const S = {
+      wrap:{fontFamily:"'Segoe UI',system-ui,sans-serif",maxWidth:1120,margin:"0 auto",padding:"0 0 60px"},
+      header:{background:"#0f172a",color:"#f8fafc",padding:"16px 24px",borderRadius:"0 0 12px 12px",marginBottom:20},
+      stepBar:{display:"flex",gap:0,marginBottom:24,borderRadius:8,overflow:"hidden",border:"1px solid #e2e8f0"},
+      stepItem:(a,d)=>({flex:1,padding:"7px 2px",textAlign:"center",fontSize:10,fontWeight:600,background:d?"#0f172a":a?"#1e40af":"#f8fafc",color:d||a?"#fff":"#64748b",cursor:"pointer"}),
+      card:{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"18px 20px",marginBottom:14},
+      title:{fontSize:14,fontWeight:700,color:"#0f172a",margin:"0 0 14px",borderBottom:"2px solid #1e40af",paddingBottom:6},
+      label:{fontSize:11,color:"#64748b",marginBottom:3,fontWeight:600},
+      inp:{width:"100%",padding:"7px 9px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:13,outline:"none",boxSizing:"border-box",background:"#f8fafc"},
+      sel:{width:"100%",padding:"7px 9px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:13,outline:"none",boxSizing:"border-box",background:"#f8fafc"},
+      g2:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px 16px"},
+      g3:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"10px 14px"},
+      btnRow:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16},
+      btn:(p)=>({padding:"8px 20px",borderRadius:7,border:"none",cursor:"pointer",fontSize:13,fontWeight:600,background:p?"#1e40af":"#f1f5f9",color:p?"#fff":"#334155"}),
+      metricCard:{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 14px",textAlign:"center"},
+    };
+
+    function RadioGroup({options,value,onChange}) {
+      return (
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {options.map(o=>(
+            <label key={o} style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",borderRadius:5,border:`1px solid ${value===o?"#1e40af":"#e2e8f0"}`,background:value===o?"#eff6ff":"#f8fafc",cursor:"pointer",fontSize:11,color:value===o?"#1e40af":"#64748b",fontWeight:value===o?700:400}}>
+              <input type="radio" style={{accentColor:"#1e40af"}} checked={value===o} onChange={()=>onChange(o)}/>{o}
+            </label>
+          ))}
+        </div>
+      );
+    }
+
+    function ScoreBar({score}) {
+      const pct=((8-score)/7)*100;
+      const bg=score<=2?"#166534":score<=3?"#16a34a":score<=4?"#ca8a04":score<=5?"#ea580c":"#dc2626";
+      return <div style={{height:6,borderRadius:3,background:"#e2e8f0",overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:bg,borderRadius:3}}/></div>;
+    }
+
+    // ─── Steps ────────────────────────────────────────────────────────────────
+    function StepLoan({state,set}) {
+      const u=state.unit==="lakhs"?"Lakhs":state.unit==="cr"?"Cr":"Million";
+      return (
+        <div style={S.card}>
+          <div style={S.title}>Step 1 — Loan Type & Amount</div>
+          <div style={S.g2}>
+            <div><div style={S.label}>Loan Category *</div>
+              <select style={S.sel} value={state.loanType} onChange={e=>set({loanType:e.target.value})}>
+                <option value="">Select…</option>{LOAN_TYPES.map(t=><option key={t}>{t}</option>)}
+              </select></div>
+            <div><div style={S.label}>Loan Amount (₹ {u}) *</div>
+              <input style={S.inp} type="number" value={state.loanAmount} onChange={e=>set({loanAmount:e.target.value})}/></div>
+            <div><div style={S.label}>Tenure (Months)</div>
+              <input style={S.inp} type="number" value={state.loanTenure||""} onChange={e=>set({loanTenure:e.target.value})}/></div>
+            <div><div style={S.label}>Purpose</div>
+              <input style={S.inp} type="text" value={state.loanPurpose||""} onChange={e=>set({loanPurpose:e.target.value})}/></div>
+          </div>
+        </div>
+      );
+    }
+
+    function StepBorrower({state,set}) {
+      return (
+        <div style={S.card}>
+          <div style={S.title}>Step 2 — Borrower Information</div>
+          <div style={S.g2}>
+            {[["companyName","Company Name *","text"],["yearsInBusiness","Years in Business","number"],
+              ["gst","GST Number","text"],["pan","PAN","text"],["cin","CIN (if applicable)","text"],
+              ["employees","Employees","number"],["bankRelation","Existing Bank Relationship","text"],
+              ["outstandingDebt","Outstanding Debt (₹)","number"]
+            ].map(([k,label,type])=>(
+              <div key={k}><div style={S.label}>{label}</div>
+                <input style={S.inp} type={type} value={state[k]||""} onChange={e=>set({[k]:e.target.value})}/>
+              </div>
+            ))}
+            <div><div style={S.label}>Constitution</div>
+              <select style={S.sel} value={state.constitution||""} onChange={e=>set({constitution:e.target.value})}>
+                <option value="">Select…</option>{CONSTITUTIONS.map(c=><option key={c}>{c}</option>)}
+              </select></div>
+            <div><div style={S.label}>Industry Sector</div>
+              <select style={S.sel} value={state.industry_sector||""} onChange={e=>set({industry_sector:e.target.value})}>
+                <option value="">Select…</option>{INDUSTRIES.map(c=><option key={c}>{c}</option>)}
+              </select></div>
+          </div>
+          <div style={{marginTop:14}}>
+            <div style={S.label}>Financial Year Labels</div>
+            <div style={{display:"flex",gap:10}}>
+              {state.years.map((y,i)=>(
+                <input key={i} style={{...S.inp,width:100}} value={y}
+                  onChange={e=>{const years=[...state.years];years[i]=e.target.value;set({years});}}/>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function StepFinancials({state,setFin}) {
+      const [activeYear,setYear] = useState(0);
+      const f = state.financials[activeYear];
+      const u=state.unit==="lakhs"?"Lakhs":state.unit==="cr"?"Cr":"Mn";
+      const tab = i => ({padding:"6px 16px",borderRadius:"6px 6px 0 0",fontSize:12,fontWeight:700,cursor:"pointer",border:"1px solid #e2e8f0",borderBottom:activeYear===i?"1px solid #fff":"1px solid #e2e8f0",background:activeYear===i?"#fff":"#f1f5f9",color:activeYear===i?"#1e40af":"#64748b",marginRight:3});
+      const inp = (field,label) => (
+        <div key={field}><div style={S.label}>{label} (₹ {u})</div>
+          <input style={S.inp} type="number" value={f[field]||""} onChange={e=>setFin(activeYear,field,e.target.value)}/></div>
+      );
+      return (
+        <div style={S.card}>
+          <div style={S.title}>Step 3 — Financial Statements</div>
+          <div style={{marginBottom:-1,display:"flex"}}>
+            {state.years.map((y,i)=><div key={i} style={tab(i)} onClick={()=>setYear(i)}>{y}</div>)}
+          </div>
+          <div style={{border:"1px solid #e2e8f0",borderRadius:"0 8px 8px 8px",padding:16,background:"#fff"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#475569",margin:"0 0 8px"}}>Profit & Loss</div>
+            <div style={S.g3}>{inp("revenue","Revenue")}{inp("cogs","COGS")}{inp("grossProfit","Gross Profit")}{inp("opex","Operating Expenses")}{inp("ebitda","EBITDA")}{inp("depreciation","Depreciation")}{inp("interest","Interest")}{inp("pbt","PBT")}{inp("pat","PAT / Net Profit")}</div>
+            <div style={{fontSize:12,fontWeight:700,color:"#475569",margin:"14px 0 8px"}}>Balance Sheet — Assets</div>
+            <div style={S.g3}>{inp("cash","Cash in Hand")}{inp("bankBalance","Bank Balance")}{inp("inventory","Inventory")}{inp("receivables","Receivables")}{inp("otherCA","Other Current Assets")}{inp("fixedAssets","Fixed Assets (Net)")}{inp("investments","Investments")}</div>
+            <div style={{fontSize:12,fontWeight:700,color:"#475569",margin:"14px 0 8px"}}>Balance Sheet — Liabilities</div>
+            <div style={S.g3}>{inp("creditors","Trade Creditors")}{inp("shortTermDebt","Short-Term Debt")}{inp("longTermDebt","Long-Term Debt")}{inp("otherLiabilities","Other Liabilities")}{inp("capital","Share Capital")}{inp("reserves","Reserves")}{inp("principalRepayment","Annual Principal Repayment")}</div>
+            <div style={{fontSize:12,fontWeight:700,color:"#475569",margin:"14px 0 8px"}}>Cash Flow</div>
+            <div style={S.g3}>{inp("operatingCF","Operating CF")}{inp("investingCF","Investing CF")}{inp("financingCF","Financing CF")}</div>
+          </div>
+        </div>
+      );
+    }
+
+    function QStep({title,questions,data,setter}) {
+      return (
+        <div style={S.card}>
+          <div style={S.title}>{title}</div>
+          {questions.map(([k,label,opts])=>(
+            <div key={k} style={{marginBottom:14,borderBottom:"1px solid #f1f5f9",paddingBottom:12}}>
+              <div style={{...S.label,marginBottom:6}}>{label}</div>
+              <RadioGroup options={opts} value={data[k]} onChange={v=>setter(k,v)}/>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function StepMgmt({state,setNested}) {
+      return <QStep title="Step 4 — Management Assessment (Weight: 15%)" data={state.mgmt} setter={setNested("mgmt")}
+        questions={[["experience","Promoter Experience",Q_OPTS[0]],["education","Education",Q_OPTS[1]],["succession","Succession Planning",Q_OPTS[2]],["industryExpertise","Industry Expertise",Q_OPTS[3]],["bankTrack","Banking Track Record",Q_OPTS[4]],["governance","Governance Quality",Q_OPTS[5]],["professionalMgmt","Professional Management",Q_OPTS[6]]]}/>;
+    }
+
+    function StepIndustryQ({state,setNested}) {
+      return <QStep title="Step 5 — Industry & Market (Weight: 15%)" data={state.industry} setter={setNested("industry")}
+        questions={[["growth","Industry Growth",IND_OPTS[0]],["marketShare","Market Share",IND_OPTS[1]],["competition","Competition",IND_OPTS[2]],["entryBarriers","Entry Barriers",IND_OPTS[3]],["customerConc","Customer Concentration",IND_OPTS[4]],["supplierConc","Supplier Concentration",IND_OPTS[5]],["techDisruption","Tech Disruption Risk",IND_OPTS[6]]]}/>;
+    }
+
+    function StepLegal({state,setNested}) {
+      const setter=setNested("legal"); const leg=state.legal;
+      const isCorp=state.ratingMode==="corporate";
+      return (
+        <div style={S.card}>
+          <div style={S.title}>Step 6 — Legal & Compliance (Weight: 10%)</div>
+          <div style={{marginBottom:14}}>
+            <div style={S.label}>{isCorp?"Corporate Credit Rating":"CIBIL Score"}</div>
+            {isCorp?(
+              <select style={{...S.sel,width:200}} value={leg.cibil} onChange={e=>setter("cibil",e.target.value)}>
+                <option value="">Select grade…</option>{CORPORATE_GRADES.map(g=><option key={g}>{g}</option>)}
+              </select>
+            ):(
+              <input style={{...S.inp,width:160}} type="number" min={300} max={900} placeholder="e.g. 720" value={leg.cibil} onChange={e=>setter("cibil",e.target.value)}/>
+            )}
+          </div>
+          {[["gstCompliance","GST Compliance",LEG_OPTS[0]],["itCompliance","IT Compliance",LEG_OPTS[1]],["filings","Regulatory Filings",LEG_OPTS[2]],["litigation","Litigation",LEG_OPTS[3]],["creditBureau","Credit Bureau Record",LEG_OPTS[4]],["wilfulDefault","Wilful Default",LEG_OPTS[5]]].map(([k,label,opts])=>(
+            <div key={k} style={{marginBottom:14,borderBottom:"1px solid #f1f5f9",paddingBottom:12}}>
+              <div style={{...S.label,marginBottom:6}}>{label}</div>
+              <RadioGroup options={opts} value={leg[k]} onChange={v=>setter(k,v)}/>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function StepCollateral({state,setNested}) {
+      const setter=setNested("collateral");
+      const u=state.unit==="lakhs"?"Lakhs":state.unit==="cr"?"Cr":"Mn";
+      const loanAmt=toRaw(state.loanAmount,state.unit);
+      const totalColl=[state.collateral.propertyValue,state.collateral.machineryValue,state.collateral.fdValue,state.collateral.inventoryValue,state.collateral.receivablesValue].reduce((s,v)=>s+toRaw(v,state.unit),0);
+      const cov=loanAmt>0?totalColl/loanAmt:0;
+      const disc=collateralInterestDiscount(cov);
+      return (
+        <div style={S.card}>
+          <div style={S.title}>Step 7 — Collateral (Weight: 10%)</div>
+          <div style={{padding:"10px 14px",background:"#eff6ff",borderRadius:8,border:"1px solid #bfdbfe",marginBottom:14,fontSize:12}}>
+            <strong style={{color:"#1e40af"}}>Coverage: {(cov*100).toFixed(1)}%</strong>
+            {cov>0&&<span style={{marginLeft:12,color:disc<0?"#166534":"#dc2626",fontWeight:700}}>Rate adj: {disc>0?"+":""}{disc}%</span>}
+          </div>
+          <div style={S.g2}>
+            {[["propertyValue","Property"],["machineryValue","Machinery"],["fdValue","FD / Securities"],["inventoryValue","Inventory"],["receivablesValue","Receivables"]].map(([k,label])=>(
+              <div key={k}><div style={S.label}>{label} (₹ {u})</div>
+                <input style={S.inp} type="number" value={state.collateral[k]||""} onChange={e=>setter(k,e.target.value)}/></div>
+            ))}
+            <div><div style={S.label}>Primary Security Type</div>
+              <select style={S.sel} value={state.collateral.collateralType} onChange={e=>setter("collateralType",e.target.value)}>
+                <option value="">Select…</option>
+                {["Immovable Property","Machinery","FD / Securities","Inventory","Receivables"].map(v=><option key={v}>{v}</option>)}
+              </select></div>
+          </div>
+        </div>
+      );
+    }
+
+    function StepBanking({state,setNested}) {
+      return <QStep title="Step 8 — Banking Conduct (Weight: 10%)" data={state.banking} setter={setNested("banking")}
+        questions={[["avgBalance","Average Bank Balance",BANK_OPTS[0]],["chequeReturns","Cheque Returns",BANK_OPTS[1]],["emiServicing","EMI Servicing",BANK_OPTS[2]],["existingExposure","Existing Exposure",BANK_OPTS[3]],["utilization","CC/OD Utilization",BANK_OPTS[4]],["accountTurnover","Account Turnover",BANK_OPTS[5]]]}/>;
+    }
+
+    // ─── Compute ──────────────────────────────────────────────────────────────
+    function computeResults(state) {
+      const fns = state.financials.map(f => {
+        const n = k => toRaw(f[k], state.unit);
+        const ca=n("cash")+n("bankBalance")+n("inventory")+n("receivables")+n("otherCA");
+        const cl=n("creditors")+n("shortTermDebt");
+        const ta=ca+n("fixedAssets")+n("investments");
+        const tDebt=n("shortTermDebt")+n("longTermDebt");
+        const nw=n("capital")+n("reserves");
+        const ebit=n("ebitda")-n("depreciation");
+        const rev=n("revenue")||1;
+        const dscr_num=n("pat")+n("depreciation")+n("interest");
+        const dscr_den=n("interest")+n("principalRepayment");
+        return {
+          currentRatio:safeDiv(ca,cl),quickRatio:safeDiv(ca-n("inventory"),cl),cashRatio:safeDiv(n("cash")+n("bankBalance"),cl),
+          der:safeDiv(tDebt,nw),icr:safeDiv(ebit,n("interest")),dscr:safeDiv(dscr_num,dscr_den),
+          npm:safeDiv(n("pat"),rev),roa:safeDiv(n("pat"),ta||1),roe:safeDiv(n("pat"),nw||1),
+          ebitdaMargin:safeDiv(n("ebitda"),rev),grossMargin:safeDiv(n("grossProfit")||n("revenue")-n("cogs"),rev),
+          invTO:safeDiv(n("cogs"),n("inventory")||1),recTO:safeDiv(n("revenue"),n("receivables")||1),
+          assetTO:safeDiv(n("revenue"),ta||1),ocfRatio:safeDiv(n("operatingCF"),rev),
+          debtToEBITDA:safeDiv(tDebt,n("ebitda")||1),
+          revenue:n("revenue"),pat:n("pat"),ebitda:n("ebitda"),ebit,tDebt,nw,
+          operatingCF:n("operatingCF"),ca,cl,ta,interest:n("interest"),
+          depreciation:n("depreciation"),principalRepayment:n("principalRepayment"),
+        };
+      });
+      const latest=fns[fns.length-1];
+      const liqScore=Math.round(avg(scoreCR(latest.currentRatio??1),scoreQR(latest.quickRatio??0.8)));
+      const solvScore=Math.round(avg(scoreDER(latest.der??2),scoreICR(latest.icr??2),scoreDSCR(latest.dscr??1.2)));
+      const profScore=Math.round(avg(scoreNPM(latest.npm??0.05),scoreROE(latest.roe??0.08),scoreEBIT(latest.ebitdaMargin??0.08)));
+      const effScore=Math.round(avg(latest.invTO>6?2:latest.invTO>4?3:latest.invTO>2?4:6,latest.recTO>12?2:latest.recTO>8?3:latest.recTO>6?4:5));
+      const cfScore=Math.round(scoreOCF(latest.ocfRatio??0.05));
+      const finScore=Math.round(liqScore*0.25+solvScore*0.30+profScore*0.25+effScore*0.10+cfScore*0.10);
+      const m=state.mgmt;
+      const mgmtScore=Math.round(avg(qScore(m.experience,Q_OPTS[0]),qScore(m.education,Q_OPTS[1]),qScore(m.succession,Q_OPTS[2]),qScore(m.industryExpertise,Q_OPTS[3]),qScore(m.bankTrack,Q_OPTS[4]),qScore(m.governance,Q_OPTS[5]),qScore(m.professionalMgmt,Q_OPTS[6])));
+      const ind=state.industry;
+      const indScore=Math.round(avg(qScore(ind.growth,IND_OPTS[0]),qScore(ind.marketShare,IND_OPTS[1]),qScore(ind.competition,IND_OPTS[2]),qScore(ind.entryBarriers,IND_OPTS[3]),qScoreInv(ind.customerConc,IND_OPTS[4]),qScoreInv(ind.supplierConc,IND_OPTS[5]),qScoreInv(ind.techDisruption,IND_OPTS[6])));
+      const leg=state.legal;
+      const cibilRaw=parseFloat(leg.cibil)||0;
+      const cibilScore=state.ratingMode==="corporate"?Math.min(8,Math.max(1,Math.ceil((CORPORATE_GRADES.indexOf(leg.cibil)+1)/1.2))):cibilRaw>=750?1:cibilRaw>=700?2:cibilRaw>=650?3:cibilRaw>=600?5:7;
+      const legScore=Math.round(avg(qScore(leg.gstCompliance,LEG_OPTS[0]),qScore(leg.itCompliance,LEG_OPTS[1]),qScore(leg.filings,LEG_OPTS[2]),qScoreInv(leg.litigation,LEG_OPTS[3]),cibilScore,qScore(leg.creditBureau,LEG_OPTS[4])));
+      const coll=state.collateral;
+      const totalCollateral=[coll.propertyValue,coll.machineryValue,coll.fdValue,coll.inventoryValue,coll.receivablesValue].reduce((s,v)=>s+toRaw(v,state.unit),0);
+      const loanAmt=toRaw(state.loanAmount,state.unit)||1;
+      const collCoverage=totalCollateral/loanAmt;
+      const collScore=collateralCoverageScore(loanAmt,totalCollateral);
+      const rateDiscount=collateralInterestDiscount(collCoverage);
+      const bnk=state.banking;
+      const bnkScore=Math.round(avg(qScore(bnk.avgBalance,BANK_OPTS[0]),qScoreInv(bnk.chequeReturns,BANK_OPTS[1]),qScore(bnk.emiServicing,BANK_OPTS[2]),qScoreInv(bnk.existingExposure,BANK_OPTS[3]),qScoreInv(bnk.utilization,BANK_OPTS[4]),qScore(bnk.accountTurnover,BANK_OPTS[5])));
+      const finalScoreRaw=finScore*0.40+mgmtScore*0.15+indScore*0.15+legScore*0.10+collScore*0.10+bnkScore*0.10;
+      const finalRating=Math.round(Math.min(Math.max(finalScoreRaw,1),8));
+      const gradeMap=[null,"AAA","AA+","AA","A+","A","BBB","BB","B"];
+      const corporateGrade=gradeMap[finalRating]||"D";
+      let filled=0,total=0;
+      state.financials.forEach(f=>Object.values(f).forEach(v=>{total++;if(v!=="")filled++;}));
+      [state.mgmt,state.legal].forEach(o=>Object.values(o).forEach(v=>{total++;if(v)filled++;}));
+      const confidence=Math.round(filled/total*100);
+      const wcGap=latest.ca-latest.cl;
+      const rev=latest.revenue||0;
+      const ebitda=latest.ebitda||0;
+      const dscr=latest.dscr||1;
+      const mpbf=Math.max(wcGap*0.75,rev*0.20);
+      const termCapacity=dscr>1?(ebitda/Math.max(dscr,1.1))*3:ebitda;
+      const ratingMult=finalRating<=2?1.0:finalRating<=3?0.90:finalRating<=4?0.80:finalRating<=5?0.70:finalRating<=6?0.55:0.40;
+      const collateralBoost=Math.min(collCoverage,1.5)/1.5;
+      const maxSafe=Math.max(mpbf,termCapacity)*ratingMult*(1+collateralBoost*0.15);
+      const stressData=fns.map((f,i)=>{
+        const stressRev=f.revenue*(1-0.20);
+        const stressCOGS=f.revenue>0?(stressRev/f.revenue)*(f.revenue-(f.ebitda||0))*0.85:0;
+        const stressEBITDA=stressRev-stressCOGS;
+        const stressPAT=stressEBITDA-(f.depreciation||0)-(f.interest||0);
+        const sdn=stressPAT+(f.depreciation||0)+(f.interest||0);
+        const sdd=(f.interest||0)+(f.principalRepayment||0);
+        return {year:state.years[i]||`Y${i+1}`,normalRev:+(f.revenue/1e5).toFixed(2),stressRev:+(stressRev/1e5).toFixed(2),normalPAT:+(f.pat/1e5).toFixed(2),stressPAT:+(stressPAT/1e5).toFixed(2),normalDSCR:+(f.dscr||0).toFixed(2),stressDSCR:sdd>0?+(sdn/sdd).toFixed(2):0,normalEBITDA:+(f.ebitda/1e5).toFixed(2),stressEBITDA:+(stressEBITDA/1e5).toFixed(2)};
+      });
+      const trendData=fns.map((f,i)=>({year:state.years[i]||`Y${i+1}`,revenue:+(f.revenue/1e5).toFixed(2),pat:+(f.pat/1e5).toFixed(2),ebitda:+(f.ebitda/1e5).toFixed(2),debt:+(f.tDebt/1e5).toFixed(2),currentRatio:+(f.currentRatio||0).toFixed(2),dscr:+(f.dscr||0).toFixed(2)}));
+      const radarData=[{subject:"Financial",score:9-finScore},{subject:"Management",score:9-mgmtScore},{subject:"Industry",score:9-indScore},{subject:"Legal",score:9-legScore},{subject:"Collateral",score:9-collScore},{subject:"Banking",score:9-bnkScore}];
+      const baseRate=finalRating<=2?9:finalRating<=3?10:finalRating<=4?11:finalRating<=5?12:finalRating<=6?13.5:15;
+      const suggestedRate=Math.max(7,(baseRate+rateDiscount)).toFixed(2);
+      const pd=Math.round((finalRating-1)/7*35+(finalRating>=6?10:0));
+      const lgd=Math.max(0,1-(totalCollateral/loanAmt||0.5));
+      const el=Math.round(pd/100*lgd*loanAmt);
+      return {fns,latest,finScore,mgmtScore,indScore,legScore,collScore,bnkScore,liqScore,solvScore,profScore,effScore,cfScore,finalRating,corporateGrade,confidence,totalCollateral,loanAmt,collCoverage,rateDiscount,mpbf,termCapacity,maxSafe,recommended:maxSafe,conservative:maxSafe*0.75,pd,el,trendData,radarData,stressData,suggestedRate,dscrOk:(latest.dscr||0)>=1.25,ltvOk:collCoverage>=0.7,pdOk:pd<15};
+    }
+
+    // ─── Results Tabs ─────────────────────────────────────────────────────────
+    function ResultsDash({R,state}) {
+      const fmt=(n,d=2)=>(isNaN(n)||n===null)?"N/A":Number(n).toFixed(d);
+      const fmtPct=n=>(isNaN(n)||n===null)?"N/A":`${(n*100).toFixed(1)}%`;
+      const meta=rm(R.finalRating);
+      const displayRating=state.ratingMode==="corporate"?`${R.corporateGrade} (${R.finalRating}/8)`:`${R.finalRating} / 8`;
+      const sc=[{name:"Financial",score:R.finScore,weight:"40%",subs:[{name:"Liquidity",score:R.liqScore},{name:"Solvency",score:R.solvScore},{name:"Profitability",score:R.profScore},{name:"Efficiency",score:R.effScore},{name:"Cash Flow",score:R.cfScore}]},{name:"Management",score:R.mgmtScore,weight:"15%"},{name:"Industry",score:R.indScore,weight:"15%"},{name:"Legal",score:R.legScore,weight:"10%"},{name:"Collateral",score:R.collScore,weight:"10%"},{name:"Banking",score:R.bnkScore,weight:"10%"}];
+      return (
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:14}}>
+            {[{label:"Rating",val:displayRating,sub:meta.label,bg:meta.bg,tc:meta.text},{label:"DSCR",val:fmt(R.latest.dscr,2),sub:R.dscrOk?"✅ ≥ 1.25":"⚠ Below 1.25"},{label:"Suggested Rate",val:`${R.suggestedRate}%`,sub:"p.a."},{label:"Collateral Coverage",val:`${(R.collCoverage*100).toFixed(0)}%`,sub:`Adj: ${R.rateDiscount>0?"+":""}${R.rateDiscount}%`},{label:"PD Estimate",val:`${R.pd}%`,sub:R.pdOk?"Low":"High Risk"},{label:"Confidence",val:`${R.confidence}%`,sub:"Data fill"}].map((k,i)=>(
+              <div key={i} style={{background:k.bg||"#f8fafc",border:`1px solid ${k.bg?"transparent":"#e2e8f0"}`,borderRadius:10,padding:"12px 14px",color:k.tc||"#0f172a"}}>
+                <div style={{fontSize:10,fontWeight:700,opacity:.75,marginBottom:3}}>{k.label}</div>
+                <div style={{fontSize:18,fontWeight:800,lineHeight:1.1}}>{k.val}</div>
+                {k.sub&&<div style={{fontSize:10,color:k.tc||"#64748b",marginTop:3}}>{k.sub}</div>}
+              </div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+            <div style={S.card}>
+              <div style={S.title}>Scorecard</div>
+              {sc.map(cat=>(
+                <div key={cat.name} style={{marginBottom:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                    <span style={{fontSize:12,fontWeight:600}}>{cat.name}</span>
+                    <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,background:rm(cat.score).bg,color:rm(cat.score).text}}>{cat.score}/8</span>
+                  </div>
+                  <ScoreBar score={cat.score}/>
+                </div>
+              ))}
+            </div>
+            <div style={S.card}>
+              <div style={S.title}>Risk Radar</div>
+              <ResponsiveContainer width="100%" height={240}>
+                <RadarChart data={R.radarData} margin={{top:10,right:30,bottom:10,left:30}}>
+                  <PolarGrid/><PolarAngleAxis dataKey="subject" tick={{fontSize:10}}/><PolarRadiusAxis angle={90} domain={[0,8]} tick={{fontSize:9}} tickCount={5}/>
+                  <Radar name="Score" dataKey="score" stroke="#1e40af" fill="#1e40af" fillOpacity={0.35}/><Tooltip/>
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10}}>
+            {[["MAX SAFE",R.maxSafe,"#f0fdf4","#166534","#86efac"],["RECOMMENDED",R.recommended,"#fefce8","#854d0e","#fde047"],["CONSERVATIVE",R.conservative,"#fff1f2","#9f1239","#fca5a5"],["RATE",`${R.suggestedRate}% p.a.`,"#eff6ff","#1e40af","#bfdbfe"]].map(([l,v,bg,tc,bc])=>(
+              <div key={l} style={{background:bg,border:`1.5px solid ${bc}`,borderRadius:10,padding:"12px 14px"}}>
+                <div style={{fontSize:9,fontWeight:700,color:tc}}>{l}</div>
+                <div style={{fontSize:16,fontWeight:800,color:tc}}>{typeof v==="number"?fmtAuto(v):v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function ResultsTrends({R}) {
+      return (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <div style={S.card}>
+            <div style={S.title}>Revenue & Profitability (₹ L)</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={R.trendData}><CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9"/><XAxis dataKey="year" tick={{fontSize:11}}/><YAxis tick={{fontSize:10}}/><Tooltip/><Legend wrapperStyle={{fontSize:11}}/>
+                <Bar dataKey="revenue" name="Revenue" fill="#1e40af"/><Bar dataKey="ebitda" name="EBITDA" fill="#16a34a"/><Bar dataKey="pat" name="PAT" fill="#ca8a04"/>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={S.card}>
+            <div style={S.title}>Liquidity & DSCR Trend</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={R.trendData}><CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9"/><XAxis dataKey="year" tick={{fontSize:11}}/><YAxis tick={{fontSize:10}} domain={[0,4]}/><Tooltip/><Legend wrapperStyle={{fontSize:11}}/>
+                <Line type="monotone" dataKey="currentRatio" name="Current Ratio" stroke="#1e40af" strokeWidth={2} dot={{r:4}}/><Line type="monotone" dataKey="dscr" name="DSCR" stroke="#16a34a" strokeWidth={2} strokeDasharray="4 4" dot={{r:4}}/>
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      );
+    }
+
+    function ResultsStress({R}) {
+      return (
+        <div style={S.card}>
+          <div style={S.title}>⚡ Stress Test — 20% Revenue Shock</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={R.stressData}><CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9"/><XAxis dataKey="year" tick={{fontSize:11}}/><YAxis tick={{fontSize:10}}/><Tooltip/><Legend wrapperStyle={{fontSize:11}}/>
+                <Bar dataKey="normalRev" name="Normal Rev (L)" fill="#1e40af"/><Bar dataKey="stressRev" name="Stressed Rev" fill="#f87171"/>
+              </BarChart>
+            </ResponsiveContainer>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={R.stressData}><CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9"/><XAxis dataKey="year" tick={{fontSize:11}}/><YAxis tick={{fontSize:10}} domain={[0,3]}/><Tooltip/><Legend wrapperStyle={{fontSize:11}}/>
+                <Line type="monotone" dataKey="normalDSCR" name="Normal DSCR" stroke="#1e40af" strokeWidth={2.5} dot={{r:5}}/><Line type="monotone" dataKey="stressDSCR" name="Stressed DSCR" stroke="#dc2626" strokeWidth={2.5} strokeDasharray="5 5" dot={{r:5}}/>
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{background:"#0f172a",color:"#fff"}}>
+              {["Year","Normal Rev","Stress Rev","Normal DSCR","Stress DSCR","Survives?"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left"}}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {R.stressData.map((d,i)=>(
+                <tr key={i} style={{background:i%2===0?"#f8fafc":"#fff",borderBottom:"1px solid #e2e8f0"}}>
+                  <td style={{padding:"5px 8px",fontWeight:700}}>{d.year}</td>
+                  <td style={{padding:"5px 8px"}}>{d.normalRev} L</td>
+                  <td style={{padding:"5px 8px",color:"#dc2626"}}>{d.stressRev} L</td>
+                  <td style={{padding:"5px 8px",fontWeight:700,color:d.normalDSCR>=1.25?"#166534":"#dc2626"}}>{d.normalDSCR}</td>
+                  <td style={{padding:"5px 8px",fontWeight:700,color:d.stressDSCR>=1.25?"#166534":"#dc2626"}}>{d.stressDSCR}</td>
+                  <td style={{padding:"5px 8px",fontWeight:700}}>{d.stressDSCR>=1.0?"✅":"❌"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function StepResults({results:R,state}) {
+      const [tab,setTab]=useState("dashboard");
+      const fmt=(n,d=2)=>(isNaN(n)||n===null)?"N/A":Number(n).toFixed(d);
+      const meta=rm(R.finalRating);
+      const displayRating=state.ratingMode==="corporate"?`${R.corporateGrade} (${R.finalRating}/8)`:`${R.finalRating} / 8`;
+      const tabBtn=(id,label)=>(
+        <button onClick={()=>setTab(id)} style={{padding:"7px 14px",borderRadius:6,border:"1px solid #e2e8f0",cursor:"pointer",background:tab===id?"#1e40af":"#f8fafc",color:tab===id?"#fff":"#64748b",fontSize:12,fontWeight:700,marginRight:5}}>{label}</button>
+      );
+      const handleDownload=()=>{
+        const rows=[["Company",state.companyName||""],["Rating",displayRating],["Grade",meta.label],["DSCR",fmt(R.latest.dscr,2)],["PD",`${R.pd}%`],["Suggested Rate",`${R.suggestedRate}%`],["Collateral Coverage",`${(R.collCoverage*100).toFixed(1)}%`],["Max Safe",fmtAuto(R.maxSafe)],["Recommended",fmtAuto(R.recommended)]];
+        const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+        const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement("a");a.href=url;a.download=`Credit_Report_${(state.companyName||"MSME").replace(/\s+/g,"_")}.csv`;
+        document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+      };
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
+            <div>
+              <div style={{fontSize:17,fontWeight:700}}>{state.companyName||"Credit Appraisal Report"}</div>
+              <div style={{fontSize:12,color:"#64748b"}}>{state.loanType||""} — {fmtAuto(R.loanAmt)} — {new Date().toLocaleDateString("en-IN")}</div>
+            </div>
+            <button style={S.btn(false)} onClick={handleDownload}>⬇ Download CSV</button>
+          </div>
+          <div style={{marginBottom:14}}>
+            {tabBtn("dashboard","📊 Dashboard")}{tabBtn("trends","📈 Trends")}{tabBtn("stress","⚡ Stress Test")}
+          </div>
+          {tab==="dashboard"&&<ResultsDash R={R} state={state}/>}
+          {tab==="trends"&&<ResultsTrends R={R}/>}
+          {tab==="stress"&&<ResultsStress R={R}/>}
+        </div>
+      );
+    }
+
+    // ─── Main App ─────────────────────────────────────────────────────────────
+    function App() {
+      const [state,setState]=useState(INIT);
+      const [results,setResults]=useState(null);
+      const set=useCallback(patch=>setState(s=>({...s,...patch})),[]);
+      const setFin=(yi,field,val)=>setState(s=>({...s,financials:s.financials.map((f,i)=>i===yi?{...f,[field]:val}:f)}));
+      const setNested=key=>(k,v)=>setState(s=>({...s,[key]:{...s[key],[k]:v}}));
+      const goNext=()=>{
+        if(state.step===7){setResults(computeResults(state));}
+        set({step:Math.min(state.step+1,8)});
+      };
+      const goBack=()=>set({step:Math.max(state.step-1,0)});
+      const renderStep=()=>{
+        switch(state.step){
+          case 0:return <StepLoan state={state} set={set}/>;
+          case 1:return <StepBorrower state={state} set={set}/>;
+          case 2:return <StepFinancials state={state} setFin={setFin}/>;
+          case 3:return <StepMgmt state={state} setNested={setNested}/>;
+          case 4:return <StepIndustryQ state={state} setNested={setNested}/>;
+          case 5:return <StepLegal state={state} setNested={setNested}/>;
+          case 6:return <StepCollateral state={state} setNested={setNested}/>;
+          case 7:return <StepBanking state={state} setNested={setNested}/>;
+          case 8:return results?<StepResults results={results} state={state}/>:<div style={{padding:40,textAlign:"center"}}>Computing…</div>;
+          default:return null;
+        }
+      };
+      return (
+        <div style={S.wrap}>
+          <div style={S.header}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+              <div>
+                <h1 style={{margin:0,fontSize:20,fontWeight:700}}>MSME Credit Risk Assessment System</h1>
+                <p style={{margin:"3px 0 0",fontSize:12,color:"#94a3b8"}}>Internal Credit Rating & Loan Appraisal — Banks & NBFCs</p>
+              </div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,background:"#1e293b",padding:"6px 12px",borderRadius:8}}>
+                  <span style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>FIGURES:</span>
+                  {["lakhs","cr","million"].map(u=>(
+                    <button key={u} onClick={()=>set({unit:u})} style={{padding:"3px 10px",borderRadius:5,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:state.unit===u?"#3b82f6":"transparent",color:state.unit===u?"#fff":"#94a3b8"}}>
+                      {u==="lakhs"?"₹L":u==="cr"?"₹Cr":"₹Mn"}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6,background:"#1e293b",padding:"6px 12px",borderRadius:8}}>
+                  <span style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>RATING:</span>
+                  {["numeric","corporate"].map(m=>(
+                    <button key={m} onClick={()=>set({ratingMode:m})} style={{padding:"3px 10px",borderRadius:5,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:state.ratingMode===m?"#3b82f6":"transparent",color:state.ratingMode===m?"#fff":"#94a3b8"}}>
+                      {m==="numeric"?"1–8":"AAA–D"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{padding:"0 14px"}}>
+            <div style={S.stepBar}>
+              {STEPS.map((s,i)=>(
+                <div key={i} style={S.stepItem(state.step===i,state.step>i)} onClick={()=>state.step>i&&set({step:i})}>
+                  {i+1}.{s}
+                </div>
+              ))}
+            </div>
+            {renderStep()}
+            {state.step<8&&(
+              <div style={S.btnRow}>
+                {state.step>0&&<button style={S.btn(false)} onClick={goBack}>← Back</button>}
+                <button style={S.btn(true)} onClick={goNext}>{state.step===7?"Generate Report →":"Next →"}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
